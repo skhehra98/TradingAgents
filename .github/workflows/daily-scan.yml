@@ -1,0 +1,63 @@
+name: Daily scan
+
+# Pre-market chart scan (trader-scanner/scan.py daily): builds the US stock
+# universe from Nasdaq Trader's lists, scans Yahoo daily closes for setups and
+# saves trader/watchlist.json as a run artifact. A scan is a list of charts that
+# match a rule, not a list of stocks to buy.
+
+on:
+  schedule:
+    # Weekdays 12:17 UTC: 8:17 AM New York in daylight time, 7:17 AM in winter,
+    # so the run finishes before the 9:30 open even if GitHub starts it late.
+    - cron: "17 12 * * 1-5"
+  workflow_dispatch:
+  push:
+    branches: [claude/scan-py-daily-9s0w2f]
+    paths:
+      - trader-scanner/**
+      - .github/workflows/daily-scan.yml
+
+concurrency:
+  group: daily-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build the universe
+        run: python trader-scanner/scan.py universe
+      - name: Daily scan
+        # Exit code 1 also means "no setups today"; the summary step says which.
+        run: |
+          set +e
+          python trader-scanner/scan.py daily --show 100 | tee scan.txt
+          echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        id: daily
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Daily scan'
+            echo '```'
+            cat scan.txt 2>/dev/null || echo "no scan output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: watchlist-${{ github.run_id }}
+          path: |
+            trader/watchlist.json
+            trader/universe.txt
+            scan.txt
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Fail if the scan could not run
+        if: steps.daily.outputs.exit != '0' && hashFiles('trader/watchlist.json') == ''
+        run: exit 1
