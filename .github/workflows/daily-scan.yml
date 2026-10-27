@@ -11,11 +11,12 @@ on:
     # so the run finishes before the 9:30 open even if GitHub starts it late.
     - cron: "17 12 * * 1-5"
   workflow_dispatch:
-  push:
-    branches: [claude/scan-py-daily-9s0w2f]
-    paths:
-      - trader-scanner/**
-      - .github/workflows/daily-scan.yml
+    inputs:
+      mode:
+        description: "daily (before the open) or orb (opening-range breakouts, after 9:50 AM ET)"
+        type: choice
+        options: [daily, orb]
+        default: daily
 
 concurrency:
   group: daily-scan
@@ -32,18 +33,20 @@ jobs:
           python-version: "3.12"
       - name: Build the universe
         run: python trader-scanner/scan.py universe
-      - name: Daily scan
+      - name: Scan
         # Exit code 1 also means "no setups today"; the summary step says which.
+        env:
+          MODE: ${{ inputs.mode || 'daily' }}
         run: |
           set +e
-          python trader-scanner/scan.py daily --show 100 | tee scan.txt
+          python trader-scanner/scan.py "$MODE" --show 100 | tee scan.txt
           echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
         id: daily
       - name: Summary
         if: always()
         run: |
           {
-            echo '## Daily scan'
+            echo "## ${{ inputs.mode || 'daily' }} scan"
             echo '```'
             cat scan.txt 2>/dev/null || echo "no scan output"
             echo '```'
