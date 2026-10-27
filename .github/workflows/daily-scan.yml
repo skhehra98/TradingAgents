@@ -1,8 +1,9 @@
 name: Daily scan
 
-# Pre-market chart scan (trader-scanner/scan.py daily): builds the US stock
-# universe from Nasdaq Trader's lists, scans Yahoo daily closes for setups and
-# saves trader/watchlist.json as a run artifact. A scan is a list of charts that
+# Chart scans with trader-scanner/scan.py: every weekday a pre-market "daily"
+# scan of Yahoo daily closes and, mid-morning, an "orb" opening-range breakout
+# scan. Both build the US stock universe from Nasdaq Trader's lists first and
+# save trader/watchlist.json as a run artifact. A scan is a list of charts that
 # match a rule, not a list of stocks to buy.
 
 on:
@@ -10,12 +11,18 @@ on:
     # Weekdays 12:17 UTC: 8:17 AM New York in daylight time, 7:17 AM in winter,
     # so the run finishes before the 9:30 open even if GitHub starts it late.
     - cron: "17 12 * * 1-5"
+    # Opening-range breakouts around 10:17 AM New York. GitHub cron is UTC, so
+    # both the daylight-time and winter slots are listed; the scan step runs orb
+    # only in the one that lands in the 10 o'clock hour ET.
+    - cron: "17 14 * * 1-5"
+    - cron: "17 15 * * 1-5"
   workflow_dispatch:
-  push:
-    branches: [claude/scan-py-daily-9s0w2f]
-    paths:
-      - trader-scanner/**
-      - .github/workflows/daily-scan.yml
+    inputs:
+      mode:
+        description: "daily (before the open) or orb (opening-range breakouts, after 9:50 AM ET)"
+        type: choice
+        options: [daily, orb]
+        default: daily
 
 concurrency:
   group: daily-scan
@@ -32,18 +39,28 @@ jobs:
           python-version: "3.12"
       - name: Build the universe
         run: python trader-scanner/scan.py universe
-      - name: Daily scan
+      - name: Scan
         # Exit code 1 also means "no setups today"; the summary step says which.
+        env:
+          MODE: ${{ inputs.mode || (github.event.schedule == '17 12 * * 1-5' && 'daily') || (github.event_name == 'schedule' && 'orb') || 'daily' }}
+          SCHEDULED: ${{ github.event_name == 'schedule' }}
         run: |
           set +e
-          python trader-scanner/scan.py daily --show 100 | tee scan.txt
+          if [ "$MODE" = orb ] && [ "$SCHEDULED" = true ] && [ "$(TZ=America/New_York date +%H)" != 10 ]; then
+            echo "Not the 10 o'clock hour in New York: the other orb slot covers today." | tee scan.txt
+            echo "exit=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python trader-scanner/scan.py "$MODE" --show 100 | tee scan.txt
           echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
         id: daily
       - name: Summary
         if: always()
+        env:
+          MODE: ${{ inputs.mode || (github.event.schedule == '17 12 * * 1-5' && 'daily') || (github.event_name == 'schedule' && 'orb') || 'daily' }}
         run: |
           {
-            echo '## Daily scan'
+            echo "## $MODE scan"
             echo '```'
             cat scan.txt 2>/dev/null || echo "no scan output"
             echo '```'
